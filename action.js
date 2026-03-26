@@ -7,6 +7,25 @@ const TG_BOT_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
 /**
+ * 字符串脱敏处理函数
+ * 邮箱格式: ab***c@domain.com
+ * 普通账号: ab***cd
+ */
+function maskString(str) {
+    if (!str) return '***';
+    if (str.includes('@')) {
+        const [local, domain] = str.split('@');
+        const maskedLocal = local.length > 2 
+            ? `${local.substring(0, 2)}***${local.slice(-1)}` 
+            : `${local[0]}***`;
+        return `${maskedLocal}@${domain}`;
+    }
+    return str.length > 4 
+        ? `${str.substring(0, 2)}***${str.slice(-2)}` 
+        : `${str[0]}***`;
+}
+
+/**
  * 发送 Telegram 通知 (支持图片)
  */
 async function sendTelegramNotification(message, imagePath = null) {
@@ -82,8 +101,14 @@ async function sendTelegramNotification(message, imagePath = null) {
         channel: 'chrome',
     });
 
+    // 引入 index 来安全地命名截图文件
+    let userIndex = 1;
+
     for (const user of users) {
-        console.log(`正在处理用户: ${user.username}`);
+        // 生成脱敏后的用户名，用于日志和通知
+        const maskedUsername = maskString(user.username);
+        
+        console.log(`正在处理用户: ${maskedUsername}`);
         const context = await browser.newContext();
         const page = await context.newPage();
 
@@ -91,7 +116,7 @@ async function sendTelegramNotification(message, imagePath = null) {
             // 1. 导航到登录页面
             await page.goto('https://secure.xserver.ne.jp/xapanel/login/xmgame');
 
-            // 2. 登录
+            // 2. 登录 (实际输入使用真实的 user.username)
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).click();
             await page.getByRole('textbox', { name: 'XServerアカウントID または メールアドレス' }).fill(user.username);
             await page.locator('#user_password').fill(user.password);
@@ -115,16 +140,23 @@ async function sendTelegramNotification(message, imagePath = null) {
 
                 let msg;
                 if (match && match[1]) {
-                    msg = `⚠️ 用户 ${user.username} 目前无法延期，下次延长时间在：${match[1]}`;
+                    msg = `⚠️ 用户 ${maskedUsername} 目前无法延期，下次延长时间在：${match[1]}`;
                 } else {
-                    msg = `⚠️ 用户 ${user.username} 未找到 '期限延长' 按钮。可能无法延长。`;
+                    msg = `⚠️ 用户 ${maskedUsername} 未找到 '期限延长' 按钮。可能无法延长。`;
                 }
 
                 console.log(msg);
-                // 保存截图
-                const screenshotPath = `skip_${user.username}.png`;
+                
+                // 保存并发送截图
+                const screenshotPath = `skip_user${userIndex}.png`;
                 await page.screenshot({ path: screenshotPath });
                 await sendTelegramNotification(msg, screenshotPath);
+                
+                // 【新增】清理本地截图文件
+                if (fs.existsSync(screenshotPath)) {
+                    fs.unlinkSync(screenshotPath);
+                }
+                
                 continue;
             }
 
@@ -132,27 +164,38 @@ async function sendTelegramNotification(message, imagePath = null) {
             await page.getByRole('button', { name: '確認画面に進む' }).click();
 
             // 6. 执行延长
-            console.log(`正在点击用户 ${user.username} 的最终延长按钮...`);
+            console.log(`正在点击用户 ${maskedUsername} 的最终延长按钮...`);
             await page.getByRole('button', { name: '期限を延長する' }).click();
 
             // 7. 返回
             await page.getByRole('link', { name: '戻る' }).click();
 
-            const successMsg = `✅ 用户 ${user.username} 成功延长期限`;
+            const successMsg = `✅ 用户 ${maskedUsername} 成功延长期限`;
             console.log(successMsg);
-            const successPath = `success_${user.username}.png`;
+            const successPath = `success_user${userIndex}.png`;
             await page.screenshot({ path: successPath });
             await sendTelegramNotification(successMsg, successPath);
+            
+            // 【新增】清理本地截图文件
+            if (fs.existsSync(successPath)) {
+                fs.unlinkSync(successPath);
+            }
 
         } catch (error) {
-            const errorMsg = `❌ 用户 ${user.username} 处理失败: ${error}`;
+            const errorMsg = `❌ 用户 ${maskedUsername} 处理失败: ${error.message || error}`;
             console.error(errorMsg);
-            const errorPath = `error_${user.username}.png`;
+            const errorPath = `error_user${userIndex}.png`;
             await page.screenshot({ path: errorPath });
             await sendTelegramNotification(errorMsg, errorPath);
+            
+            // 【新增】清理本地截图文件
+            if (fs.existsSync(errorPath)) {
+                fs.unlinkSync(errorPath);
+            }
             // 不退出进程，继续下一个用户
         } finally {
             await context.close();
+            userIndex++; // 递增用户索引
         }
     }
 
